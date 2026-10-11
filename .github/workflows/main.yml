@@ -1,0 +1,88 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            6.0.x
+
+      - name: Restore solution
+        run: dotnet restore HsMod.sln
+
+      - name: Build solution (Release)
+        run: dotnet build HsMod.sln -c Release --no-restore
+
+      - name: Create release package
+        shell: pwsh
+        run: |
+          # 创建分层目录结构
+          $packageDir = "HsMod-release"
+          $pluginsDir = Join-Path $packageDir "BepInEx\plugins"
+          $unstrippedDir = Join-Path $packageDir "BepInEx\unstripped_corlib"
+          
+          New-Item -ItemType Directory -Force -Path $pluginsDir | Out-Null
+          New-Item -ItemType Directory -Force -Path $unstrippedDir | Out-Null
+
+          # 复制编译输出
+          Copy-Item "HsMod\Release\HsMod.dll" $pluginsDir
+          if (Test-Path "HsMod\Release\HsMod.pdb") {
+            Copy-Item "HsMod\Release\HsMod.pdb" $pluginsDir
+          }
+
+          # 复制 UnstrippedCorlib DLL
+          Get-ChildItem "HsMod\UnstrippedCorlib" -Filter "*.dll" | ForEach-Object {
+            Copy-Item $_.FullName $unstrippedDir
+          }
+
+          # 复制 UnstrippedCorlibUnix (for macOS/Linux)
+          if (Test-Path "HsMod\UnstrippedCorlibUnix") {
+            $unixDir = Join-Path $packageDir "BepInEx\unstripped_corlib_unix"
+            New-Item -ItemType Directory -Force -Path $unixDir | Out-Null
+            Get-ChildItem "HsMod\UnstrippedCorlibUnix" -Filter "*.dll" | ForEach-Object {
+              Copy-Item $_.FullName $unixDir
+            }
+          }
+
+          # 复制安装脚本和说明
+          Copy-Item "HsMod\install.bat" $packageDir
+          Copy-Item "ReadMe.md" $packageDir
+          Copy-Item "LICENSE.txt" $packageDir
+
+          # 压缩成 ZIP
+          $zipName = "HsMod-${{ github.ref_name }}.zip"
+          Compress-Archive -Path (Join-Path $packageDir "*") -DestinationPath $zipName -Force
+          Write-Host "Created package: $zipName"
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: HsMod-${{ github.ref_name }}.zip
+          generate_release_notes: true
+          body: |
+            ## Installation Instructions
+            
+            1. Download this zip file and extract it into your Hearthstone root directory
+            2. You should see `BepInEx/plugins/HsMod.dll` and `BepInEx/unstripped_corlib/` populated
+            3. Make sure BepInEx 5 x64 is installed and configured
+            4. Set `dll_search_path_override = BepInEx\unstripped_corlib` in `doorstop_config.ini`
+            5. Launch Hearthstone and open settings with `Esc` → **Mod Settings**
+            
+            For detailed installation and troubleshooting, see [Documentation Wiki](https://github.com/1uan3hu/HsMod/wiki)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
